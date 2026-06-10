@@ -1,0 +1,180 @@
+<Window x:Class="ArtFinder.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="ArtFinder" 
+        Height="900" Width="1400" MinWidth="900" MinHeight="600"
+        Icon="icon.ico" 
+        Background="{StaticResource BgDark}"
+        WindowStartupLocation="CenterScreen">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="2.2*" MinWidth="420"/>
+            <ColumnDefinition Width="5" />
+            <ColumnDefinition Width="1*"  MinWidth="320"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ══════════════ ЛЕВАЯ ПАНЕЛЬ ══════════════ -->
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Верхняя панель инструментов -->
+            <Border Grid.Row="0" Background="{StaticResource BgPanel}"
+                    BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1"
+                    Padding="8,6">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+
+                    <!-- Блок 1: выбор сайта -->
+                    <Border Background="{StaticResource BgCard}" CornerRadius="6"
+                            Padding="4,2" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="BtnE621"   Content="e621.net"   Style="{StaticResource BlueBtn}"
+                                    Width="90" Margin="0,0,4,0" Click="BtnE621_Click"/>
+                            <Button x:Name="BtnRule34" Content="rule34.xxx" Style="{StaticResource BaseBtn}"
+                                    Width="90" Click="BtnRule34_Click"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Блок 2: навигация -->
+                    <Border Background="{StaticResource BgCard}" CornerRadius="6"
+                            Padding="4,2" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="◀" Style="{StaticResource BaseBtn}" Width="36"
+                                    Margin="0,0,2,0" Click="BtnBack_Click"    ToolTip="Назад"/>
+                            <Button Content="▶" Style="{StaticResource BaseBtn}" Width="36"
+                                    Margin="0,0,2,0" Click="BtnForward_Click" ToolTip="Вперёд"/>
+                            <Button Content="↺" Style="{StaticResource BaseBtn}" Width="36"
+                                    Click="BtnRefresh_Click" ToolTip="Обновить"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Настройки API -->
+                    <Button Content="⚙ API" Style="{StaticResource BaseBtn}"
+                            Width="70" Click="BtnApiSettings_Click" ToolTip="Настройки API-ключей"/>
+                </StackPanel>
+            </Border>
+
+            <!-- WebView2 -->
+            <wv2:WebView2 x:Name="WebView" Grid.Row="1"/>
+        </Grid>
+
+        <!-- Разделитель -->
+        <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+                      Background="{StaticResource BorderColor}" Cursor="SizeWE"/>
+
+        <!-- ══════════════ ПРАВАЯ ПАНЕЛЬ ══════════════ -->
+        <Border Grid.Column="2" Background="{StaticResource BgPanel}"
+                BorderBrush="{StaticResource BorderColor}" BorderThickness="1,0,0,0">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="10">
+
+                    <TextBlock Text="Просмотр и кроп" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimary}" Margin="0,6,0,10"/>
+
+                    <!-- ── Поле кропа: Grid → Image сверху, Canvas поверх ── -->
+                    <Border BorderBrush="{StaticResource BorderColor}" BorderThickness="1"
+                            CornerRadius="6" ClipToBounds="True" Margin="0,0,0,8"
+                            Height="360">
+                        <!-- WorkArea — контейнер, по которому считается GetImageRect() -->
+                        <Grid x:Name="WorkArea" Background="#111118">
+                            <!-- Image растягивается сам по себе через Stretch=Uniform -->
+                            <Image x:Name="ArtImage" Stretch="Uniform"
+                                   StretchDirection="DownOnly"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+
+                            
+                            <Canvas x:Name="CropCanvas"
+                                    Background="Transparent"
+                                    HorizontalAlignment="Stretch"
+                                    VerticalAlignment="Stretch"
+                                    MouseDown="CropCanvas_MouseDown"
+                                    MouseMove="CropCanvas_MouseMove"
+                                    MouseUp="CropCanvas_MouseUp">
+
+                                <!-- Затемняющие оверлеи -->
+                                <Rectangle x:Name="OverlayTop"    Fill="#88000000"/>
+                                <Rectangle x:Name="OverlayBottom" Fill="#88000000"/>
+                                <Rectangle x:Name="OverlayLeft"   Fill="#88000000"/>
+                                <Rectangle x:Name="OverlayRight"  Fill="#88000000"/>
+
+                                <!-- Рамка кропа -->
+                                <Rectangle x:Name="CropRect"
+                                           Stroke="#F0C040" StrokeThickness="2"
+                                           Fill="Transparent"
+                                           Visibility="Collapsed"/>
+
+                                <!-- Ручка ресайза -->
+                                <Rectangle x:Name="ResizeHandle"
+                                           Width="14" Height="14"
+                                           Fill="#F0C040" Cursor="SizeNWSE"
+                                           RadiusX="2" RadiusY="2"
+                                           Visibility="Collapsed"
+                                           MouseDown="ResizeHandle_MouseDown"/>
+                            </Canvas>
+                        </Grid>
+                    </Border>
+
+                    <!-- Размер рамки -->
+                    <TextBlock x:Name="TxtCropSize" Text="Рамка: — × —"
+                               Foreground="{StaticResource TextMuted}" FontSize="11"
+                               Margin="0,0,0,6"/>
+
+                    <!-- Фиксировать размер -->
+                    <Button x:Name="BtnLockSize" Content="Фиксировать размер рамки"
+                            Style="{StaticResource BaseBtn}" HorizontalAlignment="Stretch"
+                            Height="34" Margin="0,0,0,12" Click="BtnLockSize_Click"/>
+
+                    <!-- Главный тег -->
+                    <Label Content="ГЛАВНЫЙ ТЕГ"/>
+                    <TextBox x:Name="TxtMainTag" Height="30" Margin="0,0,0,12"
+                             ToolTip="Добавляется первым в каждый файл тегов"
+                             TextChanged="TxtMainTag_TextChanged"/>
+
+                    <!-- Путь сохранения -->
+                    <Button Content="📁  Выбрать папку сохранения"
+                            Style="{StaticResource BaseBtn}" HorizontalAlignment="Stretch"
+                            Height="34" Margin="0,0,0,4" Click="BtnChoosePath_Click"/>
+                    <TextBlock x:Name="TxtSavePath" Text="(папка не выбрана)"
+                               Foreground="{StaticResource TextMuted}" FontSize="11"
+                               TextWrapping="Wrap" Margin="2,0,0,14"/>
+
+                    <!-- Теги текущего арта -->
+                    <Expander Header="Теги текущего арта" Foreground="{StaticResource TextMuted}"
+                              Margin="0,0,0,12">
+                        <Border Background="{StaticResource BgCard}" CornerRadius="4"
+                                Padding="6" Margin="0,4,0,0">
+                            <TextBlock x:Name="TxtTagsPreview" Foreground="{StaticResource TextMuted}"
+                                       FontSize="10" TextWrapping="Wrap" MaxHeight="120"
+                                       Text="(теги не загружены)"/>
+                        </Border>
+                    </Expander>
+
+                    <!-- Кнопки сохранения -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Content="💾  Сохранить кроп"
+                                Style="{StaticResource BlueBtn}" Height="40"
+                                Click="BtnSaveCrop_Click"/>
+                        <Button Grid.Column="2" Content="🖼  Сохранить оригинал"
+                                Style="{StaticResource GreenBtn}" Height="40"
+                                Click="BtnSaveOriginal_Click"/>
+                    </Grid>
+
+                    <TextBlock x:Name="TxtStatus" Text="" Foreground="{StaticResource AccentGreen}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"
+                               HorizontalAlignment="Center"/>
+
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</Window>

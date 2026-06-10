@@ -1,0 +1,63 @@
+<Window x:Class="ArtFinder.ApiSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Настройки API" Height="360" Width="440"
+        Background="{StaticResource BgDark}"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Настройки авторизации" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{StaticResource TextPrimary}"/>
+
+        <!-- e621 -->
+        <StackPanel Grid.Row="2">
+            <Label Content="e621.net — Логин"/>
+            <TextBox x:Name="TxtE621Login" Height="30"/>
+        </StackPanel>
+        <StackPanel Grid.Row="4">
+            <Label Content="e621.net — API Key"/>
+            <PasswordBox x:Name="PwdE621Key" Height="30"
+                         Background="{StaticResource BgCard}" Foreground="{StaticResource TextPrimary}"
+                         BorderBrush="{StaticResource BorderColor}" Padding="6,4"/>
+        </StackPanel>
+
+        <!-- Разделитель -->
+        <Rectangle Grid.Row="5" Height="1" Fill="{StaticResource BorderColor}" Margin="0,4"/>
+
+        <!-- rule34 — отдельные логин + API key -->
+        <StackPanel Grid.Row="6">
+            <Label Content="rule34.xxx — Логин (для API-запросов)"/>
+            <TextBox x:Name="TxtRule34Login" Height="30"/>
+        </StackPanel>
+        <StackPanel Grid.Row="8">
+            <Label Content="rule34.xxx — API Key"/>
+            <PasswordBox x:Name="PwdRule34Key" Height="30"
+                         Background="{StaticResource BgCard}" Foreground="{StaticResource TextPrimary}"
+                         BorderBrush="{StaticResource BorderColor}" Padding="6,4"/>
+        </StackPanel>
+
+        <!-- Кнопки -->
+        <StackPanel Grid.Row="10" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Отмена" Style="{StaticResource BaseBtn}" Width="80"
+                    Margin="0,0,8,0" Click="BtnCancel_Click"/>
+            <Button Content="Сохранить" Style="{StaticResource BlueBtn}" Width="100"
+                    Click="BtnSave_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
