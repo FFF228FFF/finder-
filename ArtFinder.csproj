@@ -14,6 +14,8 @@
     <!-- Resource, а не Content: иконка окна встраивается в сборку и находится
          и в однофайловой публикации (Content-файл там не разрешался → падение). -->
     <Resource Include="icon.ico" />
+    <!-- Список запрещённых тегов Civitai для TagFilter -->
+    <EmbeddedResource Include="Resources\BlockedTags.txt" LogicalName="ArtFinder.Resources.BlockedTags.txt" />
   </ItemGroup>
 
   <ItemGroup>
