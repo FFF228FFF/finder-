@@ -85,6 +85,28 @@
             </Setter>
         </Style>
 
+        <!-- Стиль PasswordBox — как у TextBox (без него курсор чёрный на тёмном фоне) -->
+        <Style TargetType="PasswordBox">
+            <Setter Property="Background"   Value="{StaticResource BgCard}"/>
+            <Setter Property="Foreground"   Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderBrush"  Value="{StaticResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"      Value="6,4"/>
+            <Setter Property="CaretBrush"   Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="PasswordBox">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Стиль Label -->
         <Style TargetType="Label">
             <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>

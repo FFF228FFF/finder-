@@ -80,7 +80,8 @@
                             CornerRadius="6" ClipToBounds="True" Margin="0,0,0,8"
                             Height="360">
                         <!-- WorkArea — контейнер, по которому считается GetImageRect() -->
-                        <Grid x:Name="WorkArea" Background="#111118">
+                        <Grid x:Name="WorkArea" Background="#111118"
+                              SizeChanged="WorkArea_SizeChanged">
                             <!-- Image растягивается сам по себе через Stretch=Uniform -->
                             <Image x:Name="ArtImage" Stretch="Uniform"
                                    StretchDirection="DownOnly"
@@ -148,9 +149,12 @@
                               Margin="0,0,0,12">
                         <Border Background="{StaticResource BgCard}" CornerRadius="4"
                                 Padding="6" Margin="0,4,0,0">
-                            <TextBlock x:Name="TxtTagsPreview" Foreground="{StaticResource TextMuted}"
-                                       FontSize="10" TextWrapping="Wrap" MaxHeight="120"
-                                       Text="(теги не загружены)"/>
+                            <!-- Прокрутка: раньше MaxHeight у TextBlock просто обрезал список -->
+                            <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto">
+                                <TextBlock x:Name="TxtTagsPreview" Foreground="{StaticResource TextMuted}"
+                                           FontSize="11" TextWrapping="Wrap"
+                                           Text="(теги не загружены)"/>
+                            </ScrollViewer>
                         </Border>
                     </Expander>
 

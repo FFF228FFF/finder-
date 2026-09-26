@@ -11,9 +11,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="icon.ico">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
+    <!-- Resource, а не Content: иконка окна встраивается в сборку и находится
+         и в однофайловой публикации (Content-файл там не разрешался → падение). -->
+    <Resource Include="icon.ico" />
   </ItemGroup>
 
   <ItemGroup>

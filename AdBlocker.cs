@@ -10,11 +10,13 @@ namespace ArtFinder
     /// <summary>
     /// Загружает фильтр-листы и блокирует рекламные запросы в WebView2.
     ///
-    /// Источники (в порядке приоритета):
-    ///   1. uBlock Origin filters       — github.com/uBlockOrigin/uAssets (основной, включает adult)
-    ///   2. uBlock Origin badware list  — дополнительный
+    /// Источники (github.com/uBlockOrigin/uAssets):
+    ///   1. filters.txt              — основной список uBlock Origin
+    ///   2. badware.txt              — вредоносные/навязчивые ресурсы
+    ///   3. annoyances-others.txt    — прочий раздражающий контент
     ///
-    /// Жёсткий хардкод известных adult-рекламных сетей работает независимо от загрузки.
+    /// Жёсткий хардкод известных adult-рекламных сетей работает независимо от загрузки
+    /// (см. ShouldBlock: проверка хардкода не зависит от IsLoaded).
     /// </summary>
     internal class AdBlocker
     {
@@ -66,16 +68,31 @@ namespace ArtFinder
             "trafficstars.com",
             // AdXpansion
             "adxpansion.com",
+            // FuckingFast (хостинг видео-рекламы)
+            "fuckingfast.net",
+            // AppNexus/Xandr
+            "adnxs.com",
             // общие трекеры
             "googletagmanager.com", "google-analytics.com",
             "doubleclick.net", "googlesyndication.com",
         };
 
-        private readonly List<Regex>     _regexRules  = new();
-        private readonly HashSet<string> _domainRules = new(StringComparer.OrdinalIgnoreCase);
+        // Набор правил строится целиком в фоне и подменяется одной ссылкой,
+        // поэтому ShouldBlock (UI-поток) никогда не видит его наполовину.
+        private sealed class RuleSet
+        {
+            public readonly HashSet<string> Domains = new(StringComparer.OrdinalIgnoreCase);
+            // Правила с путём, сгруппированные по хосту правила: для URL
+            // проверяются только правила его хоста и родительских доменов,
+            // а не все сотни регулярок подряд.
+            public readonly Dictionary<string, List<Regex>> PathRules = new(StringComparer.OrdinalIgnoreCase);
+            public int PathRuleCount;
+        }
 
-        public bool IsLoaded   { get; private set; }
-        public int  RuleCount  => _regexRules.Count + _domainRules.Count;
+        private RuleSet? _rules;
+
+        public bool IsLoaded  => _rules != null;
+        public int  RuleCount => _rules == null ? 0 : _rules.Domains.Count + _rules.PathRuleCount;
 
         // ────────────────────────────────────────────────
         //  Публичный API
@@ -88,22 +105,25 @@ namespace ArtFinder
             http.DefaultRequestHeaders.Add("User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
 
-            int downloaded = 0;
+            var ready = new List<string>();
             foreach (var (localName, url) in FilterSources)
             {
                 string localPath = Path.Combine(CacheDir, localName);
-                bool ok = await EnsureCachedAsync(http, localPath, url);
-                if (ok)
-                {
-                    ParseFile(localPath);
-                    downloaded++;
-                }
+                if (await EnsureCachedAsync(http, localPath, url))
+                    ready.Add(localPath);
             }
 
-            IsLoaded = true;
-
-            if (downloaded == 0)
+            if (ready.Count == 0)
                 throw new Exception("Ни один фильтр-лист не удалось загрузить");
+
+            // Разбор ~1 МБ текста и сборка регулярок — вне UI-потока
+            var rules = await Task.Run(() =>
+            {
+                var set = new RuleSet();
+                foreach (var path in ready) ParseFile(path, set);
+                return set;
+            });
+            _rules = rules;
         }
 
         /// <summary>
@@ -121,20 +141,23 @@ namespace ArtFinder
                 return true;
 
             // 2. Загруженные списки
-            if (!IsLoaded) return false;
+            var rules = _rules;
+            if (rules == null || string.IsNullOrEmpty(host)) return false;
 
-            // Домены из списков
-            if (!string.IsNullOrEmpty(host) && IsDomainBlocked(host))
-                return true;
-
-            // Regex-правила
-            foreach (var rx in _regexRules)
+            // host, затем родительские домены: a.b.example.com → b.example.com → example.com
+            for (string h = host; ; )
             {
-                try { if (rx.IsMatch(url)) return true; }
-                catch { /* таймаут — пропускаем */ }
+                if (rules.Domains.Contains(h)) return true;
+                if (rules.PathRules.TryGetValue(h, out var list))
+                    foreach (var rx in list)
+                    {
+                        try { if (rx.IsMatch(url)) return true; }
+                        catch (RegexMatchTimeoutException) { /* патологический шаблон — пропускаем */ }
+                    }
+                int dot = h.IndexOf('.');
+                if (dot < 0 || dot == h.Length - 1) return false;
+                h = h[(dot + 1)..];
             }
-
-            return false;
         }
 
         // ────────────────────────────────────────────────
@@ -148,18 +171,6 @@ namespace ArtFinder
             while (dot >= 0 && dot < host.Length - 1)
             {
                 if (HardcodedDomains.Contains(host[(dot + 1)..])) return true;
-                dot = host.IndexOf('.', dot + 1);
-            }
-            return false;
-        }
-
-        private bool IsDomainBlocked(string host)
-        {
-            if (_domainRules.Contains(host)) return true;
-            int dot = host.IndexOf('.');
-            while (dot >= 0 && dot < host.Length - 1)
-            {
-                if (_domainRules.Contains(host[(dot + 1)..])) return true;
                 dot = host.IndexOf('.', dot + 1);
             }
             return false;
@@ -189,10 +200,9 @@ namespace ArtFinder
             }
         }
 
-        private void ParseFile(string path)
+        private static void ParseFile(string path, RuleSet set)
         {
             if (!File.Exists(path)) return;
-            int linesParsed = 0;
 
             foreach (var rawLine in File.ReadLines(path))
             {
@@ -208,67 +218,114 @@ namespace ArtFinder
                     || line.Contains("+js("))   // cosmetické skripty — не нужны
                     continue;
 
-                // Убираем опции ($script,$image,...) — нам важен только URL
+                // Опции ($script,$domain=...,$popup,...) нельзя просто отбросить:
+                // многие из них сужают правило (только на сайте X, только для
+                // попапов, только для IP Y). Без них правило вида
+                // "||com/$doc,ipaddress=..." превращалось в блокировку всех .com.
                 int dollar = line.IndexOf('$');
+                if (dollar > 0 && !HasOnlySafeOptions(line[(dollar + 1)..]))
+                    continue;
                 string cleanLine = dollar > 0 ? line[..dollar] : line;
 
                 // ||domain.com^ без пути — добавляем в быстрый HashSet
                 if (cleanLine.StartsWith("||") && cleanLine.EndsWith("^"))
                 {
                     string domain = cleanLine[2..^1];
-                    if (IsValidDomain(domain))
-                    { _domainRules.Add(domain); linesParsed++; }
+                    if (IsValidDomain(domain)) set.Domains.Add(domain);
                     continue;
                 }
 
-                // ||domain.com/path... — конвертируем в Regex
-                if (cleanLine.StartsWith("||"))
-                {
-                    var rx = ToRegex(cleanLine);
-                    if (rx != null) { _regexRules.Add(rx); linesParsed++; }
-                    continue;
-                }
-
-                // |https://... — полный URL с начала
+                // ||domain.com/path... и |https://... — конвертируем в Regex
                 if (cleanLine.StartsWith("|"))
                 {
-                    var rx = ToRegex(cleanLine);
-                    if (rx != null) { _regexRules.Add(rx); linesParsed++; }
+                    var rule = ToRegex(cleanLine);
+                    if (rule == null) continue;
+                    var (host, rx) = rule.Value;
+                    if (!set.PathRules.TryGetValue(host, out var list))
+                        set.PathRules[host] = list = new List<Regex>();
+                    list.Add(rx);
+                    set.PathRuleCount++;
                 }
             }
         }
 
-        private static Regex? ToRegex(string pattern)
+        // Опции, которые только ограничивают тип ресурса. Если их игнорировать,
+        // правило блокирует чуть больше типов, но на том же адресе — безопасно.
+        // Всё остальное (domain=, popup, redirect, csp, removeparam, ipaddress=,
+        // badfilter, 1p, отрицания ~...) меняет смысл правила — такие пропускаем.
+        private static readonly HashSet<string> SafeOptions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "script", "image", "stylesheet", "css", "xhr", "xmlhttprequest",
+            "subdocument", "frame", "media", "font", "object", "ping", "beacon",
+            "websocket", "other", "all", "important", "doc", "document",
+            "third-party", "3p",
+        };
+
+        private static bool HasOnlySafeOptions(string options)
+        {
+            foreach (var opt in options.Split(','))
+                if (!SafeOptions.Contains(opt.Trim())) return false;
+            return true;
+        }
+
+        // Хост правила: "ads.example.com" — только буквы/цифры/дефисы и
+        // минимум одна точка (отсекает "||com/", "||ad*/" и т.п.).
+        private static readonly Regex HostRegex = new(
+            @"^[a-z0-9-]+(\.[a-z0-9-]+)+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        private static string RuleHost(string rest)
+        {
+            int end = rest.IndexOfAny(new[] { '/', '^', '*', ':', '?', '|' });
+            return end < 0 ? rest : rest[..end];
+        }
+
+        // Возвращает хост правила (ключ индекса) и регулярку для полного URL
+        private static (string host, Regex rx)? ToRegex(string pattern)
         {
             try
             {
-                string p;
+                // Завершающий "|" — якорь конца адреса
+                bool endAnchor = pattern.Length > 2 && pattern.EndsWith('|') && !pattern.EndsWith("||");
+                if (endAnchor) pattern = pattern[..^1];
+
+                string p, host;
                 if (pattern.StartsWith("||"))
                 {
-                    // ||domain.com/path → https?://([sub.]*)domain.com/path
-                    string rest = Regex.Escape(pattern[2..])
-                        .Replace(@"\*", ".*")
-                        .Replace(@"\^", @"(?:[/?&]|$)");
-                    p = @"https?://(?:[a-z0-9\-]+\.)*" + rest;
+                    // ||domain.com/path → ^scheme://([sub.]*)domain.com/path
+                    string rest = pattern[2..];
+                    host = RuleHost(rest);
+                    if (!HostRegex.IsMatch(host)) return null;
+                    p = @"^[a-z][a-z0-9+.\-]*://(?:[a-z0-9\-]+\.)*" + EscapeBody(rest);
                 }
                 else
                 {
-                    string rest = Regex.Escape(pattern.TrimStart('|'))
-                        .Replace(@"\*", ".*")
-                        .Replace(@"\^", @"(?:[/?&]|$)");
-                    p = pattern.StartsWith("|") ? "^" + rest : rest;
+                    // |https://domain.com/path → ^https://domain.com/path
+                    string rest = pattern[1..];
+                    int scheme = rest.IndexOf("://", StringComparison.Ordinal);
+                    if (scheme <= 0) return null;
+                    host = RuleHost(rest[(scheme + 3)..]);
+                    if (!HostRegex.IsMatch(host)) return null;
+                    p = "^" + EscapeBody(rest);
                 }
+                if (endAnchor) p += "$";
 
-                return new Regex(p,
-                    RegexOptions.Compiled | RegexOptions.IgnoreCase,
-                    TimeSpan.FromMilliseconds(15));
+                // Без RegexOptions.Compiled: на один URL теперь проверяются
+                // единицы правил, а компиляция сотен регулярок стоила ~1 с
+                // на первых запросах и вызывала ложные таймауты.
+                var rx = new Regex(p,
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                    TimeSpan.FromMilliseconds(50));
+                return (host.ToLowerInvariant(), rx);
             }
             catch { return null; }
         }
 
-        private static bool IsValidDomain(string s) =>
-            s.Length > 3 && s.Contains('.') &&
-            !s.Contains('/') && !s.Contains('*') && !s.Contains('?');
+        private static string EscapeBody(string s) =>
+            Regex.Escape(s)
+                .Replace(@"\*", ".*")
+                .Replace(@"\^", @"(?:[/?&:=]|$)");
+
+        private static bool IsValidDomain(string s) => HostRegex.IsMatch(s);
 
         private static string TryGetHost(string url)
         {
