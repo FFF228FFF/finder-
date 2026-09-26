@@ -85,6 +85,10 @@ namespace ArtFinder
             _saveSettingsTimer.Tick += (s, e) => { _saveSettingsTimer.Stop(); SaveSettings(); };
             Closing += (s, e) => { if (_saveSettingsTimer.IsEnabled) { _saveSettingsTimer.Stop(); SaveSettings(); } };
 
+            // Списки запрещённых тегов грузятся и компилируются в фоне заранее,
+            // чтобы первое сохранение не ждало
+            _ = Task.Run(TagFilter.Warmup);
+
             InitWebView();
         }
 
@@ -829,12 +833,15 @@ namespace ArtFinder
                     });
                 }
 
+                // В .txt попадают только теги, разрешённые Civitai
+                var (allowedTags, removed) = TagFilter.Filter(tags);
                 string finalTags = string.IsNullOrWhiteSpace(_mainTag)
-                    ? tags
-                    : _mainTag + (string.IsNullOrEmpty(tags) ? "" : "\n\n" + tags);
+                    ? allowedTags
+                    : _mainTag + (string.IsNullOrEmpty(allowedTags) ? "" : "\n\n" + allowedTags);
                 await File.WriteAllTextAsync(Path.Combine(_savePath, baseName + ".txt"), finalTags);
 
-                SetStatus(crop ? "✔ КРОП СОХРАНЁН" : "✔ ОРИГИНАЛ СОХРАНЁН");
+                string saved = crop ? "✔ КРОП СОХРАНЁН" : "✔ ОРИГИНАЛ СОХРАНЁН";
+                SetStatus(removed > 0 ? $"{saved} (исключено запрещённых тегов: {removed})" : saved);
                 ClearStatusLater(2000);
             }
             catch (Exception ex) { SetStatus($"❌ {ex.Message}", error: true); }
