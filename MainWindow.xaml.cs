@@ -253,24 +253,44 @@ namespace ArtFinder
             {
                 SetStatus("⏳ Загрузка...");
 
-                using var req = new HttpRequestMessage(HttpMethod.Get,
-                    $"https://e621.net/posts/{postId}.json");
-
-                req.Headers.Add("User-Agent", $"ArtFinder/1.0 (by {(!string.IsNullOrEmpty(_e621Login) ? _e621Login : "Anonymous")} on e621)");
-
-                if (!string.IsNullOrEmpty(_cachedBase64Auth))
-                    req.Headers.Authorization = new AuthenticationHeaderValue("Basic", _cachedBase64Auth);
-
-                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
-                if (version != _loadVersion) return;
-
-                if (!resp.IsSuccessStatusCode)
+                string apiUrl = $"https://e621.net/posts/{postId}.json";
+                string json;
+                try
                 {
-                    SetStatus($"❌ e621 API: {(int)resp.StatusCode} {resp.ReasonPhrase}", error: true);
-                    return;
+                    using var resp = await SendWithRetryAsync(() =>
+                    {
+                        var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
+                        req.Headers.Add("User-Agent", $"ArtFinder/2.2 (by {(!string.IsNullOrEmpty(_e621Login) ? _e621Login : "Anonymous")} on e621)");
+                        if (!string.IsNullOrEmpty(_cachedBase64Auth))
+                            req.Headers.Authorization = new AuthenticationHeaderValue("Basic", _cachedBase64Auth);
+                        return req;
+                    }, token);
+                    if (version != _loadVersion) return;
+
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        SetStatus($"❌ e621 API: {(int)resp.StatusCode} {resp.ReasonPhrase}", error: true);
+                        return;
+                    }
+                    json = await resp.Content.ReadAsStringAsync(token);
+                }
+                catch (HttpRequestException) when (CanFetchViaWebView(apiUrl))
+                {
+                    // Прямое соединение не установилось (SSL/сеть — типично при
+                    // VPN/фильтрации провайдера), а встроенный браузер страницу
+                    // открыл — берём JSON его сетевым стеком.
+                    if (version != _loadVersion) return;
+                    SetStatus("⏳ Загрузка через браузер...");
+                    var (status, _, body) = await WebViewFetchAsync(apiUrl);
+                    if (version != _loadVersion) return;
+                    if (status != 200)
+                    {
+                        SetStatus($"❌ e621 API: {status}", error: true);
+                        return;
+                    }
+                    json = Encoding.UTF8.GetString(body);
                 }
 
-                string json = await resp.Content.ReadAsStringAsync(token);
                 using var doc = JsonDocument.Parse(json);
                 var post = doc.RootElement.GetProperty("post");
 
@@ -299,7 +319,7 @@ namespace ArtFinder
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex)
             {
-                if (version == _loadVersion) SetStatus($"❌ e621: {ex.Message}", error: true);
+                if (version == _loadVersion) SetStatus($"❌ e621: {DescribeError(ex)}", error: true);
             }
         }
 
@@ -373,7 +393,7 @@ namespace ArtFinder
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex)
             {
-                if (version == _loadVersion) SetStatus($"❌ rule34: {ex.Message}", error: true);
+                if (version == _loadVersion) SetStatus($"❌ rule34: {DescribeError(ex)}", error: true);
             }
         }
 
@@ -443,42 +463,153 @@ namespace ArtFinder
         // Файлы крупнее не скачиваем в память целиком
         private const long MaxImageBytes = 100L * 1024 * 1024;
 
-        private static async Task<(BitmapImage bitmap, byte[] bytes)> LoadImageAsync(string url, CancellationToken token)
+        private async Task<(BitmapImage bitmap, byte[] bytes)> LoadImageAsync(string url, CancellationToken token)
         {
             url = NormalizeUrl(url);
 
-            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            byte[] bytes;
+            try
+            {
+                bytes = await DownloadImageAsync(url, token);
+            }
+            catch (HttpRequestException) when (!token.IsCancellationRequested && CanFetchViaWebView(url))
+            {
+                // Тот же запасной путь, что и для JSON e621: сетевой стек браузера
+                var (status, mediaType, body) = await WebViewFetchAsync(url);
+                token.ThrowIfCancellationRequested();
+                if (status != 200) throw new HttpRequestException($"изображение: HTTP {status}");
+                CheckImageResponse(mediaType, body.Length);
+                bytes = body;
+            }
 
-            if (url.Contains("e621.net"))
-                req.Headers.Referrer = new Uri("https://e621.net/");
-            else if (url.Contains("rule34.xxx") || url.Contains("booru.org"))
-                req.Headers.Referrer = new Uri("https://rule34.xxx/");
+            return (DecodeImage(bytes), bytes);
+        }
 
-            req.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
+        private static async Task<byte[]> DownloadImageAsync(string url, CancellationToken token)
+        {
+            using var resp = await SendWithRetryAsync(() =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                if (url.Contains("e621.net"))
+                    req.Headers.Referrer = new Uri("https://e621.net/");
+                else if (url.Contains("rule34.xxx") || url.Contains("booru.org"))
+                    req.Headers.Referrer = new Uri("https://rule34.xxx/");
+                req.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                return req;
+            }, token);
             resp.EnsureSuccessStatusCode();
-
-            string? mediaType = resp.Content.Headers.ContentType?.MediaType;
-            if (mediaType != null && !mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
-                                  && mediaType != "application/octet-stream")
-                throw new NotSupportedException($"сервер вернул {mediaType}, а не изображение");
-            if (resp.Content.Headers.ContentLength > MaxImageBytes)
-                throw new NotSupportedException($"файл слишком большой ({resp.Content.Headers.ContentLength / 1024 / 1024} МБ)");
+            CheckImageResponse(resp.Content.Headers.ContentType?.MediaType, resp.Content.Headers.ContentLength);
 
             long len = resp.Content.Headers.ContentLength ?? 512 * 1024;
             using var net = await resp.Content.ReadAsStreamAsync(token);
             using var mem = new MemoryStream((int)Math.Min(len, 30 * 1024 * 1024));
             await net.CopyToAsync(mem, token);
-            mem.Position = 0;
+            return mem.ToArray();
+        }
 
+        private static void CheckImageResponse(string? mediaType, long? length)
+        {
+            if (!string.IsNullOrEmpty(mediaType) && !mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+                                                 && mediaType != "application/octet-stream")
+                throw new NotSupportedException($"сервер вернул {mediaType}, а не изображение");
+            if (length > MaxImageBytes)
+                throw new NotSupportedException($"файл слишком большой ({length / 1024 / 1024} МБ)");
+        }
+
+        private static BitmapImage DecodeImage(byte[] bytes)
+        {
+            using var mem = new MemoryStream(bytes, writable: false);
             var bmp = new BitmapImage();
             bmp.BeginInit();
             bmp.CacheOption = BitmapCacheOption.OnLoad;
             bmp.StreamSource = mem;
             bmp.EndInit();
             bmp.Freeze();
-            return (bmp, mem.ToArray());
+            return bmp;
+        }
+
+        // ════════════════════════════════════════════════
+        //  СЕТЬ: повторы и запасной путь через WebView2
+        // ════════════════════════════════════════════════
+        // Обрыв TLS-рукопожатия ("The SSL connection could not be established")
+        // и сброс соединения при VPN/фильтрации провайдера часто разовые —
+        // запрос повторяется на новом соединении. HttpRequestMessage нельзя
+        // отправить дважды, поэтому он создаётся фабрикой на каждую попытку.
+        private const int MaxAttempts = 3;
+
+        private static async Task<HttpResponseMessage> SendWithRetryAsync(
+            Func<HttpRequestMessage> makeRequest, CancellationToken token)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                using var req = makeRequest();
+                try
+                {
+                    return await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
+                }
+                catch (HttpRequestException) when (attempt < MaxAttempts && !token.IsCancellationRequested)
+                {
+                    await Task.Delay(400 * attempt, token);
+                }
+            }
+        }
+
+        // Запасной путь возможен, только если встроенный браузер сейчас на
+        // e621.net: fetch выполняется в контексте страницы (для API это тот же
+        // origin, static1.e621.net отдаёт CORS для https://e621.net).
+        private bool CanFetchViaWebView(string url) =>
+            WebView.CoreWebView2 != null &&
+            Uri.TryCreate(url, UriKind.Absolute, out var target) &&
+            (target.Host.Equals("e621.net", StringComparison.OrdinalIgnoreCase) ||
+             target.Host.EndsWith(".e621.net", StringComparison.OrdinalIgnoreCase)) &&
+            Uri.TryCreate(WebView.CoreWebView2.Source, UriKind.Absolute, out var page) &&
+            page.Host.Equals("e621.net", StringComparison.OrdinalIgnoreCase);
+
+        // Загрузка через сетевой стек Chromium (тот же, что показывает сайт).
+        // Runtime.evaluate с awaitPromise дожидается результата fetch —
+        // ExecuteScriptAsync промисы не ждёт.
+        private async Task<(int status, string mediaType, byte[] body)> WebViewFetchAsync(string url)
+        {
+            string script = "(async () => {" +
+                $"const r = await fetch({JsonSerializer.Serialize(url)});" +
+                "const b = new Uint8Array(await r.arrayBuffer()); let s = '';" +
+                "for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));" +
+                "return { status: r.status, type: r.headers.get('content-type') || '', data: btoa(s) };" +
+                "})()";
+            string args = JsonSerializer.Serialize(new { expression = script, awaitPromise = true, returnByValue = true });
+
+            // Если страница как раз сменилась, контекст выполнения мог
+            // пропасть — одна повторная попытка.
+            for (int attempt = 1; ; attempt++)
+            {
+                string result = await WebView.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.evaluate", args);
+                using var doc = JsonDocument.Parse(result);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("exceptionDetails", out var exc))
+                {
+                    if (attempt < 2) { await Task.Delay(500); continue; }
+                    string text = exc.TryGetProperty("exception", out var e) && e.TryGetProperty("description", out var d)
+                        ? d.GetString() ?? "" : exc.GetProperty("text").GetString() ?? "";
+                    throw new HttpRequestException($"браузер: {text.Split('\n')[0]}");
+                }
+                var value = root.GetProperty("result").GetProperty("value");
+                string mediaType = (value.GetProperty("type").GetString() ?? "").Split(';')[0].Trim();
+                return (value.GetProperty("status").GetInt32(), mediaType,
+                        Convert.FromBase64String(value.GetProperty("data").GetString() ?? ""));
+            }
+        }
+
+        // Для строки статуса: вместо "see inner exception" — настоящая причина
+        private static string DescribeError(Exception ex)
+        {
+            var msgs = new List<string>();
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                string m = e.Message.Replace(", see inner exception.", "")
+                                    .Replace("See the inner exception for details.", "").Trim();
+                if (m.Length > 0 && !msgs.Contains(m)) msgs.Add(m);
+            }
+            return string.Join(" → ", msgs);
         }
 
         private void ShowArt(BitmapImage bitmap, string postId)
@@ -833,12 +964,14 @@ namespace ArtFinder
                     });
                 }
 
-                // В .txt попадают только теги, разрешённые Civitai
+                // В .txt попадают только теги, разрешённые Civitai, в формате,
+                // который Civitai сам разбивает на теги (см. Caption)
                 var (allowedTags, removed) = TagFilter.Filter(tags);
-                string finalTags = string.IsNullOrWhiteSpace(_mainTag)
-                    ? allowedTags
-                    : _mainTag + (string.IsNullOrEmpty(allowedTags) ? "" : "\n\n" + allowedTags);
-                await File.WriteAllTextAsync(Path.Combine(_savePath, baseName + ".txt"), finalTags);
+                string caption = Caption.Build(_mainTag,
+                    allowedTags.Split("\n\n", StringSplitOptions.RemoveEmptyEntries));
+                // UTF-8 без BOM: BOM стал бы частью первого тега
+                await File.WriteAllTextAsync(Path.Combine(_savePath, baseName + ".txt"), caption,
+                    new UTF8Encoding(false));
 
                 string saved = crop ? "✔ КРОП СОХРАНЁН" : "✔ ОРИГИНАЛ СОХРАНЁН";
                 SetStatus(removed > 0 ? $"{saved} (исключено запрещённых тегов: {removed})" : saved);
