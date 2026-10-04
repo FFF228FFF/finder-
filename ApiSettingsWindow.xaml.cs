@@ -10,6 +10,7 @@ namespace ArtFinder
         public ApiSettingsWindow(string e621Login, string e621ApiKey)
         {
             InitializeComponent();
+            SourceInitialized += (s, e) => WindowTheme.ApplyDark(this);
             TxtE621Login.Text     = e621Login;
             PwdE621Key.Password   = e621ApiKey;
 
